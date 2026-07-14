@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
 import QueueCommands from "../components/Queue/QueueCommands"
+import { ChatBox } from "../components/Chat/ChatBox"
 
 import { useToast } from "../contexts/toast"
 import { Screenshot } from "../types/screenshots"
@@ -33,6 +34,7 @@ const Queue: React.FC<QueueProps> = ({
 
   const [isTooltipVisible, setIsTooltipVisible] = useState(false)
   const [tooltipHeight, setTooltipHeight] = useState(0)
+  const [isChatOpen, setIsChatOpen] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
 
   const {
@@ -152,7 +154,11 @@ const Queue: React.FC<QueueProps> = ({
             credits={credits}
             currentLanguage={currentLanguage}
             setLanguage={setLanguage}
+            isChatOpen={isChatOpen}
+            onToggleChat={() => setIsChatOpen((prev) => !prev)}
           />
+
+          {isChatOpen && <ChatBox onClose={() => setIsChatOpen(false)} />}
         </div>
       </div>
     </div>

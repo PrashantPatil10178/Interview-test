@@ -205,7 +205,18 @@ const electronAPI = {
   
   // New methods for OpenAI API integration
   getConfig: () => ipcRenderer.invoke("get-config"),
-  updateConfig: (config: { apiKey?: string; model?: string; language?: string; opacity?: number }) => 
+  updateConfig: (config: {
+    apiKey?: string
+    apiProvider?: "openai" | "gemini" | "anthropic" | "azure"
+    extractionModel?: string
+    solutionModel?: string
+    debuggingModel?: string
+    azureEndpoint?: string
+    azureDeployment?: string
+    azureApiVersion?: string
+    language?: string
+    opacity?: number
+  }) =>
     ipcRenderer.invoke("update-config", config),
   onShowSettings: (callback: () => void) => {
     const subscription = () => callback()
@@ -215,8 +226,12 @@ const electronAPI = {
     }
   },
   checkApiKey: () => ipcRenderer.invoke("check-api-key"),
-  validateApiKey: (apiKey: string) => 
+  validateApiKey: (apiKey: string) =>
     ipcRenderer.invoke("validate-api-key", apiKey),
+  sendChatMessage: (
+    message: string,
+    history: Array<{ role: "user" | "assistant"; content: string }>
+  ) => ipcRenderer.invoke("chat-message", message, history),
   openExternal: (url: string) => 
     ipcRenderer.invoke("openExternal", url),
   onApiKeyInvalid: (callback: () => void) => {

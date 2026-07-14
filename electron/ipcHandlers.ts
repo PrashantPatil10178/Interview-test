@@ -35,6 +35,21 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     return result;
   })
 
+  // Direct chat with the configured AI provider (no screenshots involved)
+  ipcMain.handle(
+    "chat-message",
+    async (
+      _event,
+      message: string,
+      history: Array<{ role: "user" | "assistant"; content: string }>
+    ) => {
+      if (!deps.processingHelper) {
+        return { success: false, error: "Processing helper not initialized" };
+      }
+      return deps.processingHelper.sendChatMessage(message, history);
+    }
+  )
+
   // Credits handlers
   ipcMain.handle("set-initial-credits", async (_event, credits: number) => {
     const mainWindow = deps.getMainWindow()

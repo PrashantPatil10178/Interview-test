@@ -11,6 +11,8 @@ interface QueueCommandsProps {
   credits: number
   currentLanguage: string
   setLanguage: (language: string) => void
+  isChatOpen: boolean
+  onToggleChat: () => void
 }
 
 const QueueCommands: React.FC<QueueCommandsProps> = ({
@@ -18,7 +20,9 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   screenshotCount = 0,
   credits,
   currentLanguage,
-  setLanguage
+  setLanguage,
+  isChatOpen,
+  onToggleChat
 }) => {
   const [isTooltipVisible, setIsTooltipVisible] = useState(false)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -193,6 +197,31 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
               </div>
             </div>
           )}
+
+          {/* Separator */}
+          <div className="mx-2 h-4 w-px bg-white/20" />
+
+          {/* Chat toggle */}
+          <div
+            className={`flex items-center gap-2 cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors ${
+              isChatOpen ? "bg-white/10" : ""
+            }`}
+            onClick={onToggleChat}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="w-3.5 h-3.5 text-white/70"
+            >
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+            <span className="text-[11px] leading-none">Chat</span>
+          </div>
 
           {/* Separator */}
           <div className="mx-2 h-4 w-px bg-white/20" />

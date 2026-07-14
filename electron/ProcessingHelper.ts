@@ -4,7 +4,7 @@ import { ScreenshotHelper } from "./ScreenshotHelper";
 import { IProcessingHelperDeps } from "./main";
 import * as axios from "axios";
 import { app, BrowserWindow, dialog } from "electron";
-import { OpenAI } from "openai";
+import { OpenAI, AzureOpenAI } from "openai";
 import { configHelper } from "./ConfigHelper";
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -49,6 +49,7 @@ export class ProcessingHelper {
   private openaiClient: OpenAI | null = null;
   private geminiApiKey: string | null = null;
   private anthropicClient: Anthropic | null = null;
+  private azureClient: AzureOpenAI | null = null;
 
   private currentProcessingAbortController: AbortController | null = null;
   private currentExtraProcessingAbortController: AbortController | null = null;
@@ -77,16 +78,19 @@ export class ProcessingHelper {
           });
           this.geminiApiKey = null;
           this.anthropicClient = null;
+          this.azureClient = null;
           console.log("OpenAI client initialized successfully");
         } else {
           this.openaiClient = null;
           this.geminiApiKey = null;
           this.anthropicClient = null;
+          this.azureClient = null;
           console.warn("No API key available, OpenAI client not initialized");
         }
       } else if (config.apiProvider === "gemini") {
         this.openaiClient = null;
         this.anthropicClient = null;
+        this.azureClient = null;
         if (config.apiKey) {
           this.geminiApiKey = config.apiKey;
           console.log("Gemini API key set successfully");
@@ -99,6 +103,7 @@ export class ProcessingHelper {
       } else if (config.apiProvider === "anthropic") {
         this.openaiClient = null;
         this.geminiApiKey = null;
+        this.azureClient = null;
         if (config.apiKey) {
           this.anthropicClient = new Anthropic({
             apiKey: config.apiKey,
@@ -114,12 +119,45 @@ export class ProcessingHelper {
             "No API key available, Anthropic client not initialized"
           );
         }
+      } else if (config.apiProvider === "azure") {
+        this.openaiClient = null;
+        this.geminiApiKey = null;
+        this.anthropicClient = null;
+
+        // Fall back to environment variables (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY,
+        // AZURE_OPENAI_DEPLOYMENT_NAME) so Azure can be configured without the Settings UI
+        const apiKey = config.apiKey || process.env.AZURE_OPENAI_API_KEY;
+        const endpoint = config.azureEndpoint || process.env.AZURE_OPENAI_ENDPOINT;
+        const deployment =
+          config.azureDeployment || process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
+        const apiVersion =
+          config.azureApiVersion ||
+          process.env.AZURE_OPENAI_API_VERSION ||
+          "2024-08-01-preview";
+
+        if (apiKey && endpoint && deployment) {
+          this.azureClient = new AzureOpenAI({
+            apiKey,
+            endpoint,
+            deployment,
+            apiVersion,
+            timeout: 60000,
+            maxRetries: 2,
+          });
+          console.log("Azure OpenAI client initialized successfully");
+        } else {
+          this.azureClient = null;
+          console.warn(
+            "Azure OpenAI endpoint, deployment name, or API key missing, client not initialized"
+          );
+        }
       }
     } catch (error) {
       console.error("Failed to initialize AI client:", error);
       this.openaiClient = null;
       this.geminiApiKey = null;
       this.anthropicClient = null;
+      this.azureClient = null;
     }
   }
 
@@ -218,6 +256,16 @@ export class ProcessingHelper {
 
       if (!this.anthropicClient) {
         console.error("Anthropic client not initialized");
+        mainWindow.webContents.send(
+          this.deps.PROCESSING_EVENTS.API_KEY_INVALID
+        );
+        return;
+      }
+    } else if (config.apiProvider === "azure" && !this.azureClient) {
+      this.initializeAIClient();
+
+      if (!this.azureClient) {
+        console.error("Azure OpenAI client not initialized");
         mainWindow.webContents.send(
           this.deps.PROCESSING_EVENTS.API_KEY_INVALID
         );
@@ -454,18 +502,28 @@ export class ProcessingHelper {
       let problemInfo;
       let isMCQ = false;
 
-      if (config.apiProvider === "openai") {
-        if (!this.openaiClient) {
+      if (config.apiProvider === "openai" || config.apiProvider === "azure") {
+        const isAzure = config.apiProvider === "azure";
+        const client = isAzure ? this.azureClient : this.openaiClient;
+
+        if (!client) {
           this.initializeAIClient();
 
-          if (!this.openaiClient) {
+          const retryClient = isAzure ? this.azureClient : this.openaiClient;
+          if (!retryClient) {
             return {
               success: false,
-              error:
-                "OpenAI API key not configured or invalid. Please check your settings.",
+              error: isAzure
+                ? "Azure OpenAI is not fully configured. Please check your endpoint, deployment name, and API key in settings."
+                : "OpenAI API key not configured or invalid. Please check your settings.",
             };
           }
         }
+
+        const activeClient = (isAzure ? this.azureClient : this.openaiClient)!;
+        const model = isAzure
+          ? config.extractionModel || config.azureDeployment || ""
+          : config.extractionModel || "gpt-4o";
 
         const messages = [
           {
@@ -488,13 +546,13 @@ export class ProcessingHelper {
           },
         ];
 
-        const extractionResponse =
-          await this.openaiClient.chat.completions.create({
-            model: config.extractionModel || "gpt-4o",
-            messages: messages,
-            max_tokens: 4000,
-            temperature: 0.2,
-          });
+        const extractionResponse = await activeClient.chat.completions.create({
+          model,
+          messages: messages,
+          ...(isAzure
+            ? { max_completion_tokens: 4000 }
+            : { max_tokens: 4000, temperature: 0.2 }),
+        });
 
         const responseText = extractionResponse.choices[0].message.content;
 
@@ -863,28 +921,37 @@ Your solution should be efficient, well-commented, and handle edge cases.
 
       let responseContent;
 
-      if (config.apiProvider === "openai") {
-        if (!this.openaiClient) {
+      if (config.apiProvider === "openai" || config.apiProvider === "azure") {
+        const isAzure = config.apiProvider === "azure";
+        const client = isAzure ? this.azureClient : this.openaiClient;
+
+        if (!client) {
           return {
             success: false,
-            error: "OpenAI API key not configured. Please check your settings.",
+            error: isAzure
+              ? "Azure OpenAI is not fully configured. Please check your endpoint, deployment name, and API key in settings."
+              : "OpenAI API key not configured. Please check your settings.",
           };
         }
 
-        const solutionResponse =
-          await this.openaiClient.chat.completions.create({
-            model: config.solutionModel || "gpt-4o",
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are an expert coding interview assistant. Provide clear, optimal solutions with detailed explanations.",
-              },
-              { role: "user", content: promptText },
-            ],
-            max_tokens: 4000,
-            temperature: 0.2,
-          });
+        const model = isAzure
+          ? config.solutionModel || config.azureDeployment || ""
+          : config.solutionModel || "gpt-4o";
+
+        const solutionResponse = await client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are an expert coding interview assistant. Provide clear, optimal solutions with detailed explanations.",
+            },
+            { role: "user", content: promptText },
+          ],
+          ...(isAzure
+            ? { max_completion_tokens: 4000 }
+            : { max_tokens: 4000, temperature: 0.2 }),
+        });
 
         responseContent = solutionResponse.choices[0].message.content;
       } else if (config.apiProvider === "gemini") {
@@ -1134,13 +1201,22 @@ Your solution should be efficient, well-commented, and handle edge cases.
 
       let debugContent;
 
-      if (config.apiProvider === "openai") {
-        if (!this.openaiClient) {
+      if (config.apiProvider === "openai" || config.apiProvider === "azure") {
+        const isAzure = config.apiProvider === "azure";
+        const client = isAzure ? this.azureClient : this.openaiClient;
+
+        if (!client) {
           return {
             success: false,
-            error: "OpenAI API key not configured. Please check your settings.",
+            error: isAzure
+              ? "Azure OpenAI is not fully configured. Please check your endpoint, deployment name, and API key in settings."
+              : "OpenAI API key not configured. Please check your settings.",
           };
         }
+
+        const model = isAzure
+          ? config.debuggingModel || config.azureDeployment || ""
+          : config.debuggingModel || "gpt-4o";
 
         const messages = [
           {
@@ -1191,11 +1267,12 @@ If you include code examples, use proper markdown code blocks with language spec
           });
         }
 
-        const debugResponse = await this.openaiClient.chat.completions.create({
-          model: config.debuggingModel || "gpt-4o",
+        const debugResponse = await client.chat.completions.create({
+          model,
           messages: messages,
-          max_tokens: 4000,
-          temperature: 0.2,
+          ...(isAzure
+            ? { max_completion_tokens: 4000 }
+            : { max_tokens: 4000, temperature: 0.2 }),
         });
 
         debugContent = debugResponse.choices[0].message.content;
@@ -1443,6 +1520,129 @@ If you include code examples, use proper markdown code blocks with language spec
       return {
         success: false,
         error: error.message || "Failed to process debug request",
+      };
+    }
+  }
+
+  /**
+   * Send a plain-text chat message to whichever AI provider is currently
+   * configured, carrying along prior turns for context. Used by the
+   * in-app chat box so users can talk to the model directly without screenshots.
+   */
+  public async sendChatMessage(
+    message: string,
+    history: Array<{ role: "user" | "assistant"; content: string }> = []
+  ): Promise<{ success: boolean; data?: string; error?: string }> {
+    try {
+      const config = configHelper.loadConfig();
+
+      if (config.apiProvider === "openai" || config.apiProvider === "azure") {
+        const isAzure = config.apiProvider === "azure";
+        let client = isAzure ? this.azureClient : this.openaiClient;
+
+        if (!client) {
+          this.initializeAIClient();
+          client = isAzure ? this.azureClient : this.openaiClient;
+        }
+
+        if (!client) {
+          return {
+            success: false,
+            error: isAzure
+              ? "Azure OpenAI is not fully configured. Please check your endpoint, deployment name, and API key in settings."
+              : "OpenAI API key not configured. Please check your settings.",
+          };
+        }
+
+        const model = isAzure
+          ? config.extractionModel || config.azureDeployment || ""
+          : config.extractionModel || "gpt-4o";
+
+        const response = await client.chat.completions.create({
+          model,
+          messages: [
+            ...history.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user" as const, content: message },
+          ],
+          ...(isAzure
+            ? { max_completion_tokens: 2000 }
+            : { max_tokens: 2000, temperature: 0.5 }),
+        });
+
+        return {
+          success: true,
+          data: response.choices[0].message.content || "",
+        };
+      } else if (config.apiProvider === "gemini") {
+        if (!this.geminiApiKey) {
+          return {
+            success: false,
+            error: "Gemini API key not configured. Please check your settings.",
+          };
+        }
+
+        const contents: GeminiMessage[] = [
+          ...history.map((m) => ({
+            role: m.role === "assistant" ? "model" : "user",
+            parts: [{ text: m.content }],
+          })),
+          { role: "user", parts: [{ text: message }] },
+        ];
+
+        const response = await axios.default.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${
+            config.extractionModel || "gemini-2.0-flash"
+          }:generateContent?key=${this.geminiApiKey}`,
+          {
+            contents,
+            generationConfig: {
+              temperature: 0.5,
+              maxOutputTokens: 2000,
+            },
+          }
+        );
+
+        const responseData = response.data as GeminiResponse;
+        if (!responseData.candidates || responseData.candidates.length === 0) {
+          throw new Error("Empty response from Gemini API");
+        }
+
+        return {
+          success: true,
+          data: responseData.candidates[0].content.parts[0].text,
+        };
+      } else if (config.apiProvider === "anthropic") {
+        if (!this.anthropicClient) {
+          return {
+            success: false,
+            error:
+              "Anthropic API key not configured. Please check your settings.",
+          };
+        }
+
+        const response = await this.anthropicClient.messages.create({
+          model: config.extractionModel || "claude-3-7-sonnet-20250219",
+          max_tokens: 2000,
+          messages: [
+            ...history.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user" as const, content: message },
+          ],
+          temperature: 0.5,
+        });
+
+        const textBlock = response.content.find(
+          (block) => block.type === "text"
+        ) as { type: "text"; text: string } | undefined;
+
+        return { success: true, data: textBlock?.text || "" };
+      }
+
+      return { success: false, error: "No AI provider configured." };
+    } catch (error: any) {
+      console.error("Chat message error:", error);
+      return {
+        success: false,
+        error: error.message || "Failed to send chat message",
       };
     }
   }

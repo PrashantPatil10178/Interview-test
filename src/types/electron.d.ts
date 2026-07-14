@@ -54,10 +54,34 @@ export interface ElectronAPI {
   getPlatform: () => string
   
   // New methods for OpenAI integration
-  getConfig: () => Promise<{ apiKey: string; model: string }>
-  updateConfig: (config: { apiKey?: string; model?: string }) => Promise<boolean>
+  getConfig: () => Promise<{
+    apiKey: string
+    apiProvider: "openai" | "gemini" | "anthropic" | "azure"
+    extractionModel: string
+    solutionModel: string
+    debuggingModel: string
+    azureEndpoint?: string
+    azureDeployment?: string
+    azureApiVersion?: string
+  }>
+  updateConfig: (config: {
+    apiKey?: string
+    apiProvider?: "openai" | "gemini" | "anthropic" | "azure"
+    extractionModel?: string
+    solutionModel?: string
+    debuggingModel?: string
+    azureEndpoint?: string
+    azureDeployment?: string
+    azureApiVersion?: string
+    language?: string
+    opacity?: number
+  }) => Promise<boolean>
   checkApiKey: () => Promise<boolean>
   validateApiKey: (apiKey: string) => Promise<{ valid: boolean; error?: string }>
+  sendChatMessage: (
+    message: string,
+    history: Array<{ role: "user" | "assistant"; content: string }>
+  ) => Promise<{ success: boolean; data?: string; error?: string }>
   openLink: (url: string) => void
   onApiKeyInvalid: (callback: () => void) => () => void
   removeListener: (eventName: string, callback: (...args: any[]) => void) => void

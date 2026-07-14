@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Settings } from "lucide-react";
 import { useToast } from "../../contexts/toast";
 
-type APIProvider = "openai" | "gemini" | "anthropic";
+type APIProvider = "openai" | "gemini" | "anthropic" | "azure";
 
 type AIModel = {
   id: string;
@@ -184,6 +184,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [extractionModel, setExtractionModel] = useState("gpt-4o");
   const [solutionModel, setSolutionModel] = useState("gpt-4o");
   const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
+  const [azureEndpoint, setAzureEndpoint] = useState("");
+  const [azureDeployment, setAzureDeployment] = useState("");
+  const [azureApiVersion, setAzureApiVersion] = useState("2024-08-01-preview");
   const [isLoading, setIsLoading] = useState(false);
   const { showToast } = useToast();
 
@@ -213,6 +216,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
         extractionModel?: string;
         solutionModel?: string;
         debuggingModel?: string;
+        azureEndpoint?: string;
+        azureDeployment?: string;
+        azureApiVersion?: string;
       }
 
       window.electronAPI
@@ -223,6 +229,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           setExtractionModel(config.extractionModel || "gpt-4o");
           setSolutionModel(config.solutionModel || "gpt-4o");
           setDebuggingModel(config.debuggingModel || "gpt-4o");
+          setAzureEndpoint(config.azureEndpoint || "");
+          setAzureDeployment(config.azureDeployment || "");
+          setAzureApiVersion(config.azureApiVersion || "2024-08-01-preview");
         })
         .catch((error: unknown) => {
           console.error("Failed to load config:", error);
@@ -251,18 +260,25 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       setExtractionModel("claude-3-7-sonnet-20250219");
       setSolutionModel("claude-3-7-sonnet-20250219");
       setDebuggingModel("claude-3-7-sonnet-20250219");
+    } else if (provider === "azure") {
+      // Azure uses a single deployment name in place of a model for every stage
+      setExtractionModel(azureDeployment);
+      setSolutionModel(azureDeployment);
+      setDebuggingModel(azureDeployment);
     }
   };
 
   const handleSave = async () => {
     setIsLoading(true);
     try {
+      const isAzure = apiProvider === "azure";
       const result = await window.electronAPI.updateConfig({
         apiKey,
         apiProvider,
-        extractionModel,
-        solutionModel,
-        debuggingModel,
+        extractionModel: isAzure ? azureDeployment : extractionModel,
+        solutionModel: isAzure ? azureDeployment : solutionModel,
+        debuggingModel: isAzure ? azureDeployment : debuggingModel,
+        ...(isAzure ? { azureEndpoint, azureDeployment, azureApiVersion } : {}),
       });
       
       if (result) {
@@ -325,7 +341,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           {/* API Provider Selection */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-white">API Provider</label>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <div
                 className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
                   apiProvider === "openai"
@@ -386,13 +402,34 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   </div>
                 </div>
               </div>
+              <div
+                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
+                  apiProvider === "azure"
+                    ? "bg-white/10 border border-white/20"
+                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                }`}
+                onClick={() => handleProviderChange("azure")}
+              >
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`w-3 h-3 rounded-full ${
+                      apiProvider === "azure" ? "bg-white" : "bg-white/20"
+                    }`}
+                  />
+                  <div className="flex flex-col">
+                    <p className="font-medium text-white text-sm">Azure OpenAI</p>
+                    <p className="text-xs text-white/60">Your own Azure deployment</p>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          
+
           <div className="space-y-2">
             <label className="text-sm font-medium text-white" htmlFor="apiKey">
-            {apiProvider === "openai" ? "OpenAI API Key" : 
-             apiProvider === "gemini" ? "Gemini API Key" : 
+            {apiProvider === "openai" ? "OpenAI API Key" :
+             apiProvider === "gemini" ? "Gemini API Key" :
+             apiProvider === "azure" ? "Azure OpenAI API Key" :
              "Anthropic API Key"}
             </label>
             <Input
@@ -401,8 +438,9 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={
-                apiProvider === "openai" ? "sk-..." : 
+                apiProvider === "openai" ? "sk-..." :
                 apiProvider === "gemini" ? "Enter your Gemini API key" :
+                apiProvider === "azure" ? "Enter your Azure OpenAI API key" :
                 "sk-ant-..."
               }
               className="bg-black/50 border-white/10 text-white"
@@ -413,8 +451,53 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               </p>
             )}
             <p className="text-xs text-white/50">
-              Your API key is stored locally and never sent to any server except {apiProvider === "openai" ? "OpenAI" : "Google"}
+              Your API key is stored locally and never sent to any server except {
+                apiProvider === "openai" ? "OpenAI" :
+                apiProvider === "gemini" ? "Google" :
+                apiProvider === "azure" ? "your Azure OpenAI resource" :
+                "Anthropic"
+              }
             </p>
+            {apiProvider === "azure" && (
+              <div className="space-y-2 pt-2">
+                <label className="text-sm font-medium text-white" htmlFor="azureEndpoint">
+                  Azure Endpoint
+                </label>
+                <Input
+                  id="azureEndpoint"
+                  type="text"
+                  value={azureEndpoint}
+                  onChange={(e) => setAzureEndpoint(e.target.value)}
+                  placeholder="https://your-resource.openai.azure.com"
+                  className="bg-black/50 border-white/10 text-white"
+                />
+                <label className="text-sm font-medium text-white" htmlFor="azureDeployment">
+                  Deployment Name
+                </label>
+                <Input
+                  id="azureDeployment"
+                  type="text"
+                  value={azureDeployment}
+                  onChange={(e) => setAzureDeployment(e.target.value)}
+                  placeholder="e.g. gpt-4o"
+                  className="bg-black/50 border-white/10 text-white"
+                />
+                <label className="text-sm font-medium text-white" htmlFor="azureApiVersion">
+                  API Version
+                </label>
+                <Input
+                  id="azureApiVersion"
+                  type="text"
+                  value={azureApiVersion}
+                  onChange={(e) => setAzureApiVersion(e.target.value)}
+                  placeholder="2024-08-01-preview"
+                  className="bg-black/50 border-white/10 text-white"
+                />
+                <p className="text-xs text-white/50">
+                  This deployment is used for problem extraction, solution generation, and debugging.
+                </p>
+              </div>
+            )}
             <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10">
               <p className="text-xs text-white/80 mb-1">Don't have an API key?</p>
               {apiProvider === "openai" ? (
@@ -441,14 +524,26 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   </p>
                   <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
                 </>
+              ) : apiProvider === "azure" ? (
+                <>
+                  <p className="text-xs text-white/60 mb-1">1. Create an Azure OpenAI resource in the <button
+                    onClick={() => openExternalLink('https://portal.azure.com/')}
+                    className="text-blue-400 hover:underline cursor-pointer">Azure Portal</button>
+                  </p>
+                  <p className="text-xs text-white/60 mb-1">2. Deploy a model in <button
+                    onClick={() => openExternalLink('https://oai.azure.com/')}
+                    className="text-blue-400 hover:underline cursor-pointer">Azure AI Foundry</button> and note its deployment name
+                  </p>
+                  <p className="text-xs text-white/60">3. Copy the endpoint and key from your resource's "Keys and Endpoint" page and paste them above</p>
+                </>
               ) : (
                 <>
-                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button 
-                    onClick={() => openExternalLink('https://console.anthropic.com/signup')} 
+                  <p className="text-xs text-white/60 mb-1">1. Create an account at <button
+                    onClick={() => openExternalLink('https://console.anthropic.com/signup')}
                     className="text-blue-400 hover:underline cursor-pointer">Anthropic</button>
                   </p>
-                  <p className="text-xs text-white/60 mb-1">2. Go to the <button 
-                    onClick={() => openExternalLink('https://console.anthropic.com/settings/keys')} 
+                  <p className="text-xs text-white/60 mb-1">2. Go to the <button
+                    onClick={() => openExternalLink('https://console.anthropic.com/settings/keys')}
                     className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
                   </p>
                   <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
@@ -500,19 +595,28 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             </div>
           </div>
           
+          {apiProvider === "azure" ? (
+            <div className="space-y-2 mt-4">
+              <label className="text-sm font-medium text-white">AI Model Selection</label>
+              <p className="text-xs text-white/60 -mt-1">
+                Azure OpenAI uses the deployment name configured above for problem extraction,
+                solution generation, and debugging.
+              </p>
+            </div>
+          ) : (
           <div className="space-y-4 mt-4">
             <label className="text-sm font-medium text-white">AI Model Selection</label>
             <p className="text-xs text-white/60 -mt-3 mb-2">
               Select which models to use for each stage of the process
             </p>
-            
+
             {modelCategories.map((category) => {
               // Get the appropriate model list based on selected provider
-              const models = 
-                apiProvider === "openai" ? category.openaiModels : 
+              const models =
+                apiProvider === "openai" ? category.openaiModels :
                 apiProvider === "gemini" ? category.geminiModels :
                 category.anthropicModels;
-              
+
               return (
                 <div key={category.key} className="mb-4">
                   <label className="text-sm font-medium text-white mb-1 block">
@@ -563,6 +667,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               );
             })}
           </div>
+          )}
         </div>
         <DialogFooter className="flex justify-between sm:justify-between">
           <Button

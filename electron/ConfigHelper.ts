@@ -3,16 +3,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import { EventEmitter } from "events";
-import { OpenAI } from "openai";
+import { OpenAI, AzureOpenAI } from "openai";
 
 interface Config {
   apiKey: string;
-  apiProvider: "openai" | "gemini" | "anthropic"; // Added provider selection
+  apiProvider: "openai" | "gemini" | "anthropic" | "azure"; // Added provider selection
   extractionModel: string;
   solutionModel: string;
   debuggingModel: string;
   language: string;
   opacity: number;
+  // Azure OpenAI specific settings
+  azureEndpoint: string;
+  azureDeployment: string;
+  azureApiVersion: string;
 }
 
 export class ConfigHelper extends EventEmitter {
@@ -25,6 +29,10 @@ export class ConfigHelper extends EventEmitter {
     debuggingModel: "gemini-2.0-flash",
     language: "python",
     opacity: 1.0,
+    // Fall back to environment variables so Azure can be configured without the Settings UI
+    azureEndpoint: process.env.AZURE_OPENAI_ENDPOINT || "",
+    azureDeployment: process.env.AZURE_OPENAI_DEPLOYMENT_NAME || "",
+    azureApiVersion: process.env.AZURE_OPENAI_API_VERSION || "2024-08-01-preview",
   };
 
   constructor() {
@@ -60,7 +68,7 @@ export class ConfigHelper extends EventEmitter {
    */
   private sanitizeModelSelection(
     model: string,
-    provider: "openai" | "gemini" | "anthropic"
+    provider: "openai" | "gemini" | "anthropic" | "azure"
   ): string {
     if (provider === "openai") {
       // Only allow gpt-4o and gpt-4o-mini for OpenAI
@@ -96,6 +104,9 @@ export class ConfigHelper extends EventEmitter {
         return "claude-3-7-sonnet-20250219";
       }
       return model;
+    } else if (provider === "azure") {
+      // Azure model "names" are user-defined deployment names, so there's no fixed allowlist
+      return model;
     }
     // Default fallback
     return model;
@@ -111,7 +122,8 @@ export class ConfigHelper extends EventEmitter {
         if (
           config.apiProvider !== "openai" &&
           config.apiProvider !== "gemini" &&
-          config.apiProvider !== "anthropic"
+          config.apiProvider !== "anthropic" &&
+          config.apiProvider !== "azure"
         ) {
           config.apiProvider = "gemini"; // Default to Gemini if invalid
         }
@@ -207,11 +219,35 @@ export class ConfigHelper extends EventEmitter {
           updates.extractionModel = "claude-3-7-sonnet-20250219";
           updates.solutionModel = "claude-3-7-sonnet-20250219";
           updates.debuggingModel = "claude-3-7-sonnet-20250219";
+        } else if (updates.apiProvider === "azure") {
+          // Azure has no fixed model list - all three stages use the same deployment
+          const deployment =
+            updates.azureDeployment ||
+            currentConfig.azureDeployment ||
+            process.env.AZURE_OPENAI_DEPLOYMENT_NAME ||
+            "";
+          updates.extractionModel = deployment;
+          updates.solutionModel = deployment;
+          updates.debuggingModel = deployment;
         } else {
           updates.extractionModel = "gemini-2.0-flash";
           updates.solutionModel = "gemini-2.0-flash";
           updates.debuggingModel = "gemini-2.0-flash";
         }
+      }
+
+      // If just the Azure deployment name changed (provider unchanged), keep the three
+      // model fields in sync with it since Azure uses one deployment for everything
+      if (
+        provider === "azure" &&
+        updates.azureDeployment &&
+        !updates.extractionModel &&
+        !updates.solutionModel &&
+        !updates.debuggingModel
+      ) {
+        updates.extractionModel = updates.azureDeployment;
+        updates.solutionModel = updates.azureDeployment;
+        updates.debuggingModel = updates.azureDeployment;
       }
 
       // Sanitize model selections in the updates
@@ -245,7 +281,10 @@ export class ConfigHelper extends EventEmitter {
         updates.extractionModel !== undefined ||
         updates.solutionModel !== undefined ||
         updates.debuggingModel !== undefined ||
-        updates.language !== undefined
+        updates.language !== undefined ||
+        updates.azureEndpoint !== undefined ||
+        updates.azureDeployment !== undefined ||
+        updates.azureApiVersion !== undefined
       ) {
         this.emit("config-updated", newConfig);
       }
@@ -270,7 +309,7 @@ export class ConfigHelper extends EventEmitter {
    */
   public isValidApiKeyFormat(
     apiKey: string,
-    provider?: "openai" | "gemini" | "anthropic"
+    provider?: "openai" | "gemini" | "anthropic" | "azure"
   ): boolean {
     // If provider is not specified, attempt to auto-detect
     if (!provider) {
@@ -294,6 +333,9 @@ export class ConfigHelper extends EventEmitter {
     } else if (provider === "anthropic") {
       // Basic format validation for Anthropic API keys
       return /^sk-ant-[a-zA-Z0-9]{32,}$/.test(apiKey.trim());
+    } else if (provider === "azure") {
+      // Azure OpenAI keys have no fixed prefix, just check it's a plausible length
+      return apiKey.trim().length >= 32;
     }
 
     return false;
@@ -336,7 +378,7 @@ export class ConfigHelper extends EventEmitter {
    */
   public async testApiKey(
     apiKey: string,
-    provider?: "openai" | "gemini" | "anthropic"
+    provider?: "openai" | "gemini" | "anthropic" | "azure"
   ): Promise<{ valid: boolean; error?: string }> {
     // Auto-detect provider based on key format if not specified
     if (!provider) {
@@ -360,6 +402,8 @@ export class ConfigHelper extends EventEmitter {
       return this.testGeminiKey(apiKey);
     } else if (provider === "anthropic") {
       return this.testAnthropicKey(apiKey);
+    } else if (provider === "azure") {
+      return this.testAzureKey(apiKey);
     }
 
     return { valid: false, error: "Unknown API provider" };
@@ -445,6 +489,62 @@ export class ConfigHelper extends EventEmitter {
       let errorMessage = "Unknown error validating Anthropic API key";
 
       if (error.message) {
+        errorMessage = `Error: ${error.message}`;
+      }
+
+      return { valid: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Test Azure OpenAI API key by making a minimal chat completion call
+   * against the configured endpoint/deployment.
+   */
+  private async testAzureKey(
+    apiKey: string
+  ): Promise<{ valid: boolean; error?: string }> {
+    try {
+      const config = this.loadConfig();
+      const endpoint = config.azureEndpoint || process.env.AZURE_OPENAI_ENDPOINT;
+      const deployment =
+        config.azureDeployment || process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
+      const apiVersion =
+        config.azureApiVersion ||
+        process.env.AZURE_OPENAI_API_VERSION ||
+        "2024-08-01-preview";
+
+      if (!apiKey || apiKey.trim().length < 10) {
+        return { valid: false, error: "Invalid Azure OpenAI API key format." };
+      }
+      if (!endpoint || !deployment) {
+        return {
+          valid: false,
+          error:
+            "Azure OpenAI endpoint and deployment name must be configured before testing the key.",
+        };
+      }
+
+      const azure = new AzureOpenAI({ apiKey, endpoint, deployment, apiVersion });
+      await azure.chat.completions.create({
+        model: deployment,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+      });
+      return { valid: true };
+    } catch (error: any) {
+      console.error("Azure OpenAI API key test failed:", error);
+
+      let errorMessage = "Unknown error validating Azure OpenAI API key";
+      if (error.status === 401) {
+        errorMessage =
+          "Invalid API key. Please check your Azure OpenAI key and try again.";
+      } else if (error.status === 404) {
+        errorMessage =
+          "Deployment not found. Check the Azure OpenAI endpoint and deployment name.";
+      } else if (error.status === 429) {
+        errorMessage =
+          "Rate limit exceeded on this Azure OpenAI deployment.";
+      } else if (error.message) {
         errorMessage = `Error: ${error.message}`;
       }
 
